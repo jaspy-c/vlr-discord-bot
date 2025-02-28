@@ -113,7 +113,7 @@ def scrape_vlr():
             tournament = phase_tournament.text.strip().replace(phase, "").strip() if phase_tournament else "N/A"
 
             match_data = [
-                formatted_datetime, team1, score1, team2, score5, match_status,
+                formatted_datetime, team1, score1, team2, score2, match_status,
                 phase, tournament, match_link
             ]
             matches.append(match_data)
