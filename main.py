@@ -10,6 +10,7 @@ import json
 from flask import Flask
 from threading import Thread
 import psycopg2
+import traceback
 
 # Discord bot configuration
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
@@ -20,7 +21,13 @@ if not DISCORD_BOT_TOKEN:
     exit(1)
 
 # Load Google credentials from environment
-google_creds = json.loads(os.getenv("GOOGLE_CREDS_JSON"))
+try:
+    google_creds = json.loads(os.getenv("GOOGLE_CREDS_JSON", "{}"))
+    if not google_creds:
+        print("WARNING: Google credentials JSON is missing or empty")
+except json.JSONDecodeError:
+    print("ERROR: Google credentials JSON is invalid")
+    google_creds = {}
 
 # Initialize Discord bot
 intents = discord.Intents.default()
@@ -57,6 +64,7 @@ def get_existing_matches_from_sheet():
         return match_urls
     except Exception as e:
         print(f"❌ Error getting existing matches: {e}")
+        traceback.print_exc()
         return set()
 
 # Function to scrape VLR.gg and update data
@@ -152,17 +160,28 @@ def update_google_sheets(matches):
         print("✅ Updated Google Sheets with", len(matches), "matches!")
     except Exception as e:
         print(f"❌ Error updating Google Sheets: {e}")
+        traceback.print_exc()
 
 # Insert data into the PostgreSQL database
 def insert_data_to_db(matches):
     try:
-        conn = psycopg2.connect(
-            dbname=os.getenv("DB_NAME"),
-            user=os.getenv("DB_USER"),
-            password=os.getenv("DB_PASSWORD"),
-            host=os.getenv("DB_HOST"),
-            port=os.getenv("DB_PORT")
-        )
+        # Try to connect using DATABASE_URL first (common in hosting platforms)
+        database_url = os.getenv("DATABASE_URL")
+        
+        if database_url:
+            # Connect directly using the URL
+            print("Connecting to database using DATABASE_URL")
+            conn = psycopg2.connect(database_url)
+        else:
+            # Fall back to individual connection parameters
+            print("Connecting to database using individual parameters")
+            conn = psycopg2.connect(
+                dbname=os.getenv("DB_NAME"),
+                user=os.getenv("DB_USER"),
+                password=os.getenv("DB_PASSWORD"),
+                host=os.getenv("DB_HOST"),
+                port=os.getenv("DB_PORT")
+            )
         
         # Create table if it doesn't exist
         cur = conn.cursor()
@@ -207,7 +226,9 @@ def insert_data_to_db(matches):
         conn.close()
         print("✅ Updated PostgreSQL database with", len(matches), "matches!")
     except Exception as e:
-        print(f"❌ Error inserting data into PostgreSQL: {e}")
+        print(f"❌ Error inserting data into PostgreSQL: {str(e)}")
+        traceback.print_exc()
+        print("Make sure DATABASE_URL or the individual DB_* environment variables are set")
 
 # Keep the Flask app alive (required for hosting services like Replit)
 def keep_alive():
@@ -236,6 +257,8 @@ async def on_ready():
         print(f"✅ Successfully found user: {target_user.name}")
     except discord.errors.NotFound:
         print(f"❌ Could not find user with ID {YOUR_DISCORD_USER_ID}. Check if the ID is correct.")
+    except ValueError:
+        print(f"❌ Invalid Discord user ID format: {YOUR_DISCORD_USER_ID}")
 
     # Start the match checking task
     check_for_new_matches.start()
@@ -244,31 +267,35 @@ async def on_ready():
 @tasks.loop(minutes=10)  # Check every 10 minutes
 async def check_for_new_matches():
     print(f"🔄 Checking for new matches... {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    new_completed_matches = scrape_vlr()
+    try:
+        new_completed_matches = scrape_vlr()
 
-    if new_completed_matches:
-        print(f"Found {len(new_completed_matches)} new completed matches!")
+        if new_completed_matches:
+            print(f"Found {len(new_completed_matches)} new completed matches!")
 
-        if target_user:
-            try:
-                for match_data in new_completed_matches:
-                    match_message = (
-                        f"🔥 **New Match Completed!** 🔥\n"
-                        f"🏆 {match_data[7]} - {match_data[6]}\n"
-                        f"⚔️ {match_data[1]} vs {match_data[3]}\n"
-                        f"Score: {match_data[2]} - {match_data[4]}\n"
-                        f"🕒 {match_data[0]}\n"
-                        f"🔗 [Match Link]({match_data[8]})"
-                    )
-                    await target_user.send(match_message)
-                print(f"✅ Sent {len(new_completed_matches)} new match notifications!")
-            except discord.errors.Forbidden:
-                print("❌ Cannot send DM to user - they have DMs disabled or blocked the bot")
+            if target_user:
+                try:
+                    for match_data in new_completed_matches:
+                        match_message = (
+                            f"🔥 **New Match Completed!** 🔥\n"
+                            f"🏆 {match_data[7]} - {match_data[6]}\n"
+                            f"⚔️ {match_data[1]} vs {match_data[3]}\n"
+                            f"Score: {match_data[2]} - {match_data[4]}\n"
+                            f"🕒 {match_data[0]}\n"
+                            f"🔗 [Match Link]({match_data[8]})"
+                        )
+                        await target_user.send(match_message)
+                    print(f"✅ Sent {len(new_completed_matches)} new match notifications!")
+                except discord.errors.Forbidden:
+                    print("❌ Cannot send DM to user - they have DMs disabled or blocked the bot")
+            else:
+                print(f"❌ Target user not found. Still waiting to find user with ID {YOUR_DISCORD_USER_ID}")
         else:
-            print(f"❌ Target user not found. Still waiting to find user with ID {YOUR_DISCORD_USER_ID}")
-    else:
-        print("✅ No new matches found.")
-
+            print("✅ No new matches found.")
+    except Exception as e:
+        print(f"❌ Error in check_for_new_matches: {str(e)}")
+        traceback.print_exc()
+        
 # Run the bot
 if __name__ == "__main__":
     keep_alive()  # Keep the Flask app alive
