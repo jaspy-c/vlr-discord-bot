@@ -7,10 +7,9 @@ import discord
 from discord.ext import commands, tasks
 import os
 import json
-from keep_alive import keep_alive
-import psycopg2
 from flask import Flask
 from threading import Thread
+import psycopg2
 
 # Discord bot configuration
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
@@ -20,7 +19,7 @@ if not DISCORD_BOT_TOKEN:
     print("ERROR: Discord bot token is missing!")
     exit(1)
 
-# Load Google credentials from Replit Secrets
+# Load Google credentials from environment
 google_creds = json.loads(os.getenv("GOOGLE_CREDS_JSON"))
 
 # Initialize Discord bot
@@ -31,17 +30,36 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # Store user object once found
 target_user = None
 
-# Initialize Flask app
-app = Flask(__name__)
+# Connect to Google Sheets
+def get_google_sheets_client():
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(google_creds, scope)
+    return gspread.authorize(creds)
 
-def run_flask():
-    app.run(host="0.0.0.0", port=8080)
+# Function to get existing matches from Google Sheets
+def get_existing_matches_from_sheet():
+    try:
+        client = get_google_sheets_client()
+        sheet = client.open("vod_fetcher").sheet1
+        
+        # Get all rows excluding the header
+        all_data = sheet.get_all_values()
+        if len(all_data) <= 1:  # Only header or empty
+            return set()
+            
+        # Extract URLs from the last column (Match URL)
+        match_urls = set()
+        for row in all_data[1:]:  # Skip header row
+            if len(row) >= 9:  # Make sure we have enough columns
+                match_urls.add(row[8])  # URL is in the 9th column (index 8)
+        
+        print(f"✅ Found {len(match_urls)} existing matches in Google Sheet")
+        return match_urls
+    except Exception as e:
+        print(f"❌ Error getting existing matches: {e}")
+        return set()
 
-def keep_alive():
-    t = Thread(target=run_flask)
-    t.start()
-
-# Function to scrape VLR.gg and return new completed matches
+# Function to scrape VLR.gg and update data
 def scrape_vlr():
     VLR_URL = "https://www.vlr.gg/matches/results"
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -54,8 +72,8 @@ def scrape_vlr():
 
     current_date = None  # To track the current match date
 
-    # Track processed matches (persistent across script runs)
-    processed_matches = load_processed_matches()
+    # Get existing match URLs from the Google Sheet
+    existing_match_urls = get_existing_matches_from_sheet()
 
     # Iterate through the match schedule
     for element in soup.find_all(["div", "a"]):
@@ -66,8 +84,8 @@ def scrape_vlr():
         if "wf-module-item" in element.get("class", []) and "mod-bg-after-striped_purple" in element.get("class", []):
             match_link = "https://www.vlr.gg" + element["href"]
 
-            # Check if match is already processed
-            is_new_match = match_link not in processed_matches
+            # Check if match is already in our sheet
+            is_new_match = match_link not in existing_match_urls
 
             match_time = element.find("div", class_="match-item-time").text.strip()
 
@@ -95,53 +113,45 @@ def scrape_vlr():
             tournament = phase_tournament.text.strip().replace(phase, "").strip() if phase_tournament else "N/A"
 
             match_data = [
-                formatted_datetime, team1, score1, team2, score2, match_status,
+                formatted_datetime, team1, score1, team2, score5, match_status,
                 phase, tournament, match_link
             ]
             matches.append(match_data)
 
-            # Check if this is a newly completed match
+            # Check if this is a newly completed match that we should notify about
             if is_new_match and match_status.lower() in ["completed", "finished", "final"]:
                 new_completed_matches.append(match_data)
 
-            # Add match link to processed matches
-            processed_matches.add(match_link)
+    # Update Google Sheets with all match data
+    update_google_sheets(matches)
+    
+    # Update PostgreSQL database with all matches
+    insert_data_to_db(matches)
 
-    # Update Google Sheets
+    return new_completed_matches
+
+# Update Google Sheets with match data
+def update_google_sheets(matches):
     try:
-        # Set up Google Sheets API
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(google_creds, scope)
-        client = gspread.authorize(creds)
+        client = get_google_sheets_client()
 
-        # Update Google Sheet
+        # Update main data sheet
         sheet = client.open("vod_fetcher").sheet1
+        
+        # Clear all data except header
         sheet.clear()
         sheet.append_row([
             "Datetime", "Team 1", "Score 1", "Team 2", "Score 2", "Status",
             "Phase", "Tournament", "Match URL"
         ])
-        sheet.append_rows(matches)
-        print("✅ Updated Google Sheets!")
+        
+        # Add all current matches
+        if matches:
+            sheet.append_rows(matches)
+            
+        print("✅ Updated Google Sheets with", len(matches), "matches!")
     except Exception as e:
         print(f"❌ Error updating Google Sheets: {e}")
-
-    save_processed_matches(processed_matches)
-
-    return new_completed_matches
-
-# Load processed matches from file
-def load_processed_matches():
-    try:
-        with open("processed_matches.txt", "r") as f:
-            return set(f.read().splitlines())
-    except FileNotFoundError:
-        return set()
-
-# Save processed matches to file
-def save_processed_matches(processed_matches):
-    with open("processed_matches.txt", "w") as f:
-        f.write("\n".join(processed_matches))
 
 # Insert data into the PostgreSQL database
 def insert_data_to_db(matches):
@@ -153,31 +163,67 @@ def insert_data_to_db(matches):
             host=os.getenv("DB_HOST"),
             port=os.getenv("DB_PORT")
         )
+        
+        # Create table if it doesn't exist
         cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS matches (
+                id SERIAL PRIMARY KEY,
+                datetime TIMESTAMP,
+                team1 VARCHAR(255),
+                score1 VARCHAR(10),
+                team2 VARCHAR(255),
+                score2 VARCHAR(10),
+                status VARCHAR(50),
+                phase VARCHAR(255),
+                tournament VARCHAR(255),
+                match_link VARCHAR(255) UNIQUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+        
+        # Clear existing data and insert new data
+        cur.execute("TRUNCATE TABLE matches")
+        
         for match in matches:
             cur.execute("""
-                INSERT INTO matches (datetime, team1, score1, team2, score2, status, phase, tournament, match_link)
+                INSERT INTO matches 
+                (datetime, team1, score1, team2, score2, status, phase, tournament, match_link)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, match)
+                ON CONFLICT (match_link) DO UPDATE 
+                SET datetime = EXCLUDED.datetime,
+                    team1 = EXCLUDED.team1,
+                    score1 = EXCLUDED.score1,
+                    team2 = EXCLUDED.team2,
+                    score2 = EXCLUDED.score2,
+                    status = EXCLUDED.status,
+                    phase = EXCLUDED.phase,
+                    tournament = EXCLUDED.tournament
+            """, match)
+        
         conn.commit()
         cur.close()
         conn.close()
+        print("✅ Updated PostgreSQL database with", len(matches), "matches!")
     except Exception as e:
         print(f"❌ Error inserting data into PostgreSQL: {e}")
 
-# Fetch data from Google Sheets
-def fetch_google_sheets_data():
-    try:
-        # Set up Google Sheets API
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        creds = ServiceAccountCredentials.from_json_keyfile_name(google_creds, scope)
-        client = gspread.authorize(creds)
-
-        sheet = client.open("vod_fetcher").sheet1
-        return sheet.get_all_records()  # Fetch all records from Google Sheets
-    except Exception as e:
-        print(f"❌ Error fetching data from Google Sheets: {e}")
-        return []
+# Keep the Flask app alive (required for hosting services like Replit)
+def keep_alive():
+    app = Flask('')
+    
+    @app.route('/')
+    def home():
+        return "I'm alive!"
+    
+    def run():
+        app.run(host='0.0.0.0', port=8080)
+    
+    server_thread = Thread(target=run)
+    server_thread.daemon = True
+    server_thread.start()
+    print("Flask server started")
 
 # Discord bot events
 @bot.event
@@ -186,8 +232,8 @@ async def on_ready():
     print(f"Bot is logged in as {bot.user}")
 
     try:
-        target_user = await bot.fetch_user(YOUR_DISCORD_USER_ID)
-        print(f"✅ Successfully found user: {target_user.name}#{target_user.discriminator}")
+        target_user = await bot.fetch_user(int(YOUR_DISCORD_USER_ID))
+        print(f"✅ Successfully found user: {target_user.name}")
     except discord.errors.NotFound:
         print(f"❌ Could not find user with ID {YOUR_DISCORD_USER_ID}. Check if the ID is correct.")
 
@@ -197,7 +243,7 @@ async def on_ready():
 # Task to periodically check for matches
 @tasks.loop(minutes=10)  # Check every 10 minutes
 async def check_for_new_matches():
-    print("🔄 Checking for new matches...")
+    print(f"🔄 Checking for new matches... {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     new_completed_matches = scrape_vlr()
 
     if new_completed_matches:
@@ -210,7 +256,7 @@ async def check_for_new_matches():
                         f"🔥 **New Match Completed!** 🔥\n"
                         f"🏆 {match_data[7]} - {match_data[6]}\n"
                         f"⚔️ {match_data[1]} vs {match_data[3]}\n"
-                        f"Score: {match_data[2] - {match_data[4]}\n"
+                        f"Score: {match_data[2]} - {match_data[4]}\n"
                         f"🕒 {match_data[0]}\n"
                         f"🔗 [Match Link]({match_data[8]})"
                     )
@@ -227,4 +273,3 @@ async def check_for_new_matches():
 if __name__ == "__main__":
     keep_alive()  # Keep the Flask app alive
     bot.run(DISCORD_BOT_TOKEN)
-
