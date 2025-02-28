@@ -5,3 +5,5 @@ oauth2client
 discord.py
 Flask
 python-dotenv
+psycopg2
+sqlalchemy
