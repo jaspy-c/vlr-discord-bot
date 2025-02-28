@@ -207,9 +207,10 @@ async def check_for_new_matches():
             try:
                 for match_data in new_completed_matches:
                     match_message = (
-                        f"🔥 **New Match Found!** 🔥\n"
+                        f"🔥 **New Match Completed!** 🔥\n"
                         f"🏆 {match_data[7]} - {match_data[6]}\n"
                         f"⚔️ {match_data[1]} vs {match_data[3]}\n"
+                        f"Score: {match_data[2] - {match_data[4]}\n"
                         f"🕒 {match_data[0]}\n"
                         f"🔗 [Match Link]({match_data[8]})"
                     )
