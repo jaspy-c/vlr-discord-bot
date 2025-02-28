@@ -1,0 +1,7 @@
+requests
+beautifulsoup4
+gspread
+oauth2client
+discord.py
+Flask
+python-dotenv
