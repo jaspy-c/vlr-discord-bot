@@ -271,5 +271,13 @@ async def check_for_new_matches():
 
 # Run the bot
 if __name__ == "__main__":
+    # Test scraping and updating sheets directly before starting the bot
+    try:
+        print("Testing direct scrape...")
+        test_matches = scrape_vlr()
+        print(f"Direct scrape test completed, found {len(test_matches)} new matches")
+    except Exception as e:
+        print(f"Direct scrape test failed with error: {str(e)}")
+    
     keep_alive()  # Keep the Flask app alive
     bot.run(DISCORD_BOT_TOKEN)
