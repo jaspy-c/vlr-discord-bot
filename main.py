@@ -11,6 +11,7 @@ from flask import Flask
 from threading import Thread
 import psycopg2
 import traceback
+import time  # Needed for sleep in the self-ping function
 
 # Discord bot configuration
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
@@ -246,6 +247,17 @@ def keep_alive():
     server_thread.start()
     print("Flask server started")
 
+# Self-pinging mechanism to keep the app awake
+def self_ping():
+    SELF_PING_URL = os.getenv("SELF_PING_URL", "http://localhost:8080/")
+    while True:
+        try:
+            response = requests.get(SELF_PING_URL)
+            print(f"Self ping response: {response.status_code}")
+        except Exception as e:
+            print(f"Self ping failed: {e}")
+        time.sleep(300)  # Ping every 5 minutes
+
 # Discord bot events
 @bot.event
 async def on_ready():
@@ -296,7 +308,12 @@ async def check_for_new_matches():
         print(f"❌ Error in check_for_new_matches: {str(e)}")
         traceback.print_exc()
         
-# Run the bot
+# Run the bot and start the self-pinging mechanism
 if __name__ == "__main__":
     keep_alive()  # Keep the Flask app alive
+    # Start the self-ping thread
+    ping_thread = Thread(target=self_ping)
+    ping_thread.daemon = True
+    ping_thread.start()
     bot.run(DISCORD_BOT_TOKEN)
+
