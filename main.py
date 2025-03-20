@@ -11,7 +11,8 @@ from flask import Flask
 from threading import Thread
 import psycopg2
 import traceback
-import time  # Needed for sleep in the self-ping function
+import time
+import asyncio  # Added for async rate limiting
 
 # Discord bot configuration
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
@@ -37,6 +38,40 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 # Store user object once found
 target_user = None
+
+# Rate limiting configuration
+class RateLimiter:
+    def __init__(self, max_requests=5, cooldown_period=6):
+        self.max_requests = max_requests  # Maximum messages in cooldown period
+        self.cooldown_period = cooldown_period  # Cooldown period in seconds
+        self.request_times = []  # Track timestamps of requests
+        self.lock = asyncio.Lock()  # Synchronize access to request_times
+    
+    async def wait_if_needed(self):
+        async with self.lock:
+            # Get current time
+            now = time.time()
+            
+            # Remove timestamps older than cooldown period
+            self.request_times = [t for t in self.request_times if now - t < self.cooldown_period]
+            
+            # If we've hit the rate limit, wait
+            if len(self.request_times) >= self.max_requests:
+                # Calculate time to wait: oldest timestamp + cooldown - current time + small buffer
+                wait_time = self.request_times[0] + self.cooldown_period - now + 0.1
+                print(f"⏱️ Rate limit hit, waiting for {wait_time:.2f} seconds")
+                
+                # Release lock while waiting
+                await asyncio.sleep(wait_time)
+                
+                # Re-acquire lock and check again (recursive call)
+                await self.wait_if_needed()
+            
+            # Add current timestamp and proceed
+            self.request_times.append(now)
+
+# Create rate limiter instance
+discord_rate_limiter = RateLimiter(max_requests=5, cooldown_period=6)
 
 # Connect to Google Sheets
 def get_google_sheets_client():
@@ -122,7 +157,7 @@ def scrape_vlr():
             tournament = phase_tournament.text.strip().replace(phase, "").strip() if phase_tournament else "N/A"
 
             match_data = [
-                formatted_datetime, team1, score1, team2, score2, match_status,
+                formatted_datetime, team1, score1, team2, score4, match_status,
                 phase, tournament, match_link
             ]
             matches.append(match_data)
@@ -258,6 +293,14 @@ def self_ping():
             print(f"Self ping failed: {e}")
         time.sleep(300)  # Ping every 5 minutes
 
+# Rate-limited message sending function
+async def send_rate_limited_message(user, content):
+    # Wait if we need to respect rate limits
+    await discord_rate_limiter.wait_if_needed()
+    # Send the message
+    await user.send(content)
+    print(f"📨 Sent message to {user.name}")
+
 # Discord bot events
 @bot.event
 async def on_ready():
@@ -296,10 +339,14 @@ async def check_for_new_matches():
                             f"🕒 {match_data[0]}\n"
                             f"🔗 [Match Link]({match_data[8]})"
                         )
-                        await target_user.send(match_message)
-                    print(f"✅ Sent {len(new_completed_matches)} new match notifications!")
+                        # Use the rate-limited message sending function
+                        await send_rate_limited_message(target_user, match_message)
+                    print(f"✅ Sent {len(new_completed_matches)} new match notifications with rate limiting!")
                 except discord.errors.Forbidden:
                     print("❌ Cannot send DM to user - they have DMs disabled or blocked the bot")
+                except Exception as e:
+                    print(f"❌ Error sending notifications: {str(e)}")
+                    traceback.print_exc()
             else:
                 print(f"❌ Target user not found. Still waiting to find user with ID {YOUR_DISCORD_USER_ID}")
         else:
@@ -307,6 +354,18 @@ async def check_for_new_matches():
     except Exception as e:
         print(f"❌ Error in check_for_new_matches: {str(e)}")
         traceback.print_exc()
+
+# Manual command to test rate limiting
+@bot.command(name="testlimit")
+async def test_rate_limit(ctx, count: int = 10):
+    """Test the rate limiting by sending multiple messages"""
+    if ctx.author.id == int(YOUR_DISCORD_USER_ID):
+        await ctx.send(f"Sending {count} test messages with rate limiting...")
+        for i in range(count):
+            await send_rate_limited_message(ctx.author, f"Test message {i+1} of {count}")
+        await ctx.send("All test messages sent!")
+    else:
+        await ctx.send("Only the bot owner can use this command.")
         
 # Run the bot and start the self-pinging mechanism
 if __name__ == "__main__":
