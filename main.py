@@ -125,8 +125,16 @@ def scrape_vlr():
             # Update current_date whenever we find a new date header
             current_date = element.text.strip().split("\n")[0]  # Extract only the date text
 
-        if "wf-module-item" in element.get("class", []) and "mod-bg-after-striped_purple" in element.get("class", []):
+        # Check if element is a match item with either targeted class
+        if "wf-module-item" in element.get("class", []) and (
+            "mod-bg-after-striped_purple" in element.get("class", []) or 
+            "mod-bg-after-orange" in element.get("class", [])
+        ):
             match_link = "https://www.vlr.gg" + element["href"]
+            
+            # Skip if "game-changers" is in the URL
+            if "game-changers" in match_link:
+                continue
 
             # Check if match is already in our sheet
             is_new_match = match_link not in existing_match_urls
@@ -156,15 +164,23 @@ def scrape_vlr():
             phase = phase_tournament.find("div", class_="match-item-event-series").text.strip() if phase_tournament else "N/A"
             tournament = phase_tournament.text.strip().replace(phase, "").strip() if phase_tournament else "N/A"
 
+            # Track which class was used for this match (for debugging)
+            match_class = "purple" if "mod-bg-after-striped_purple" in element.get("class", []) else "orange"
+
             match_data = [
-                formatted_datetime, team1, score1, team2, score4, match_status,
+                formatted_datetime, team1, score1, team2, score2, match_status,
                 phase, tournament, match_link
             ]
             matches.append(match_data)
 
+            # Log match info with class for debugging
+            print(f"Found match: {team1} vs {team2} [{match_class}] - Status: {match_status}")
+
             # Check if this is a newly completed match that we should notify about
             if is_new_match and match_status.lower() in ["completed", "finished", "final"]:
                 new_completed_matches.append(match_data)
+
+    print(f"Found a total of {len(matches)} matches ({len(new_completed_matches)} new completed)")
 
     # Update Google Sheets with all match data
     update_google_sheets(matches)
