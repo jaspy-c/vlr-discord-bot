@@ -84,14 +84,16 @@ def scrape_vlr():
     # Get existing match URLs from the Google Sheet
     existing_match_urls = get_existing_matches_from_sheet()
 
-    # Iterate through the match schedule
-    for element in soup.find_all(["div", "a"]):
-        if set(element.get("class", [])) == {"wf-label", "mod-large"}:
-            # Update current_date whenever we find a new date header
-            current_date = element.text.strip().split("\n")[0]  # Extract only the date text
-
-        if "wf-module-item" in element.get("class", []) and "mod-bg-after-striped_purple" in element.get("class", []):
+    # Iterate through the relevant match elements
+    for element in soup.find_all("a", class_="wf-module-item"):
+        class_list = element.get("class", [])
+        # Check if element has one of the required classes
+        if "mod-bg-after-striped_purple" in class_list or "mod-bg-after-orange" in class_list:
             match_link = "https://www.vlr.gg" + element["href"]
+
+            # Exclude matches containing "game-changers" in the href
+            if "game-changers" in match_link.lower():
+                continue  # Skip this match
 
             # Check if match is already in our sheet
             is_new_match = match_link not in existing_match_urls
@@ -130,6 +132,10 @@ def scrape_vlr():
             # Check if this is a newly completed match that we should notify about
             if is_new_match and match_status.lower() in ["completed", "finished", "final"]:
                 new_completed_matches.append(match_data)
+
+        # Update current_date when encountering a date header element
+        elif set(element.get("class", [])) == {"wf-label", "mod-large"}:
+            current_date = element.text.strip().split("\n")[0]  # Extract only the date text
 
     # Update Google Sheets with all match data
     update_google_sheets(matches)
