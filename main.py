@@ -138,7 +138,7 @@ def scrape_vlr():
                 continue
             
             # Skip if champions or masters is not in the URL
-            if "champions" or "masters" not in match_link:
+            if not ("champions" in match_link or "masters" in match_link):
                 continue
 
             # Check if match is already in our sheet
