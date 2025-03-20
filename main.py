@@ -128,12 +128,17 @@ def scrape_vlr():
         # Check if element is a match item with either targeted class
         if "wf-module-item" in element.get("class", []) and (
             "mod-bg-after-striped_purple" in element.get("class", []) or 
-            "mod-bg-after-orange" in element.get("class", [])
+            "mod-bg-after-orange" in element.get("class", []) or
+            "mod-bg-after-blue" in element.get("class", []) or
+            "mod-bg-after-red" in element.get("class", [])
         ):
             match_link = "https://www.vlr.gg" + element["href"]
-            
-            # Skip if "game-changers" is in the URL
+
             if "game-changers" in match_link:
+                continue
+            
+            # Skip if champions or masters is not in the URL
+            if "champions" or "masters" not in match_link:
                 continue
 
             # Check if match is already in our sheet
