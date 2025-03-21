@@ -268,7 +268,7 @@ def scrape_vlr():
             score1 = scores[0].text.strip() if len(scores) > 0 else "-"
             score2 = scores[1].text.strip() if len(scores) > 1 else "-"
 
-            match_status = element.find("div", class_="ml-status").text.strip()
+            match_status = element.find("div", class_="ml-status").text.strip().lower()
 
             # Extract Phase and Tournament Name
             phase_tournament = element.find("div", class_="match-item-event")
