@@ -497,7 +497,7 @@ async def check_for_new_matches():
                     
                     for match_data in matches_to_notify:
                         match_message = (
-                            f"🔥 **New Match Completed!** 🔥\n"
+                            f"\n"
                             f"🏆 {match_data[7]} - {match_data[6]}\n"
                             f"⚔️ {match_data[1]} vs {match_data[3]}\n"
                             f"Score: {match_data[2]} - {match_data[4]}\n"
