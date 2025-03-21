@@ -75,27 +75,23 @@ class RateLimiter:
         self.lock = asyncio.Lock()  # Synchronize access to request_times
     
     async def wait_if_needed(self):
+    while True:
         async with self.lock:
-            # Get current time
             now = time.time()
-            
             # Remove timestamps older than cooldown period
             self.request_times = [t for t in self.request_times if now - t < self.cooldown_period]
             
-            # If we've hit the rate limit, wait
-            if len(self.request_times) >= self.max_requests:
-                # Calculate time to wait: oldest timestamp + cooldown - current time + small buffer
+            if len(self.request_times) < self.max_requests:
+                # We are under the limit, so record the current time and break out
+                self.request_times.append(now)
+                break
+            else:
+                # Calculate time to wait based on the oldest request timestamp
                 wait_time = self.request_times[0] + self.cooldown_period - now + 0.1
                 print(f"⏱️ Rate limit hit, waiting for {wait_time:.2f} seconds")
-                
-                # Release lock while waiting
-                await asyncio.sleep(wait_time)
-                
-                # Re-acquire lock and check again (recursive call)
-                await self.wait_if_needed()
-            
-            # Add current timestamp and proceed
-            self.request_times.append(now)
+        # Release the lock before sleeping
+        await asyncio.sleep(wait_time)
+
 
 # Create rate limiter instance
 discord_rate_limiter = RateLimiter(max_requests=5, cooldown_period=6)
