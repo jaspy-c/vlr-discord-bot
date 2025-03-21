@@ -352,14 +352,17 @@ def insert_data_to_db(matches, new_completed_matches=None):
             # Extract match link for identification
             match_link = match[8]
             
-            # Check if this match is in the new_completed_matches list
-            should_notify = any(match_link == new_match[8] for new_match in (new_completed_matches or []))
+            # Get current match status
+            match_status = match[5].lower()  # Status is at index 5
+            
+            # Check if this match is completed and should be notified
+            should_notify = match_status in ["completed", "finished", "final"]
             
             # Insert or update match record
             cur.execute("""
                 INSERT INTO matches 
-                (datetime, team1, score1, team2, score2, status, phase, tournament, match_link)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                (datetime, team1, score1, team2, score2, status, phase, tournament, match_link, notified)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, FALSE)
                 ON CONFLICT (match_link) DO UPDATE 
                 SET datetime = EXCLUDED.datetime,
                     team1 = EXCLUDED.team1,
@@ -368,21 +371,17 @@ def insert_data_to_db(matches, new_completed_matches=None):
                     score2 = EXCLUDED.score2,
                     status = EXCLUDED.status,
                     phase = EXCLUDED.phase,
-                    tournament = EXCLUDED.tournament
-            """, match)
+                    tournament = EXCLUDED.tournament,
+                    -- Only update notified if it's not already TRUE
+                    notified = CASE 
+                                WHEN matches.notified = TRUE THEN TRUE 
+                                ELSE FALSE 
+                              END
+            """, match + (False,))  # Add FALSE for notified parameter
             
-            # If this is a new completed match, mark it as pending notification
-            if should_notify:
-                # Check if notified is already TRUE
-                cur.execute("SELECT notified FROM matches WHERE match_link = %s", (match_link,))
-                result = cur.fetchone()
-                
-                # Only update if not already notified
-                if not result or not result[0]:
-                    print(f"Marking match for notification: {match[1]} vs {match[3]}")
-                else:
-                    print(f"Match already notified: {match[1]} vs {match[3]}")
-        
+            # If debugging, print match status
+            print(f"Match {match[1]} vs {match[3]} - Status: {match_status}, Should notify: {should_notify}")
+            
         conn.commit()
         cur.close()
         conn.close()
@@ -487,7 +486,7 @@ async def check_for_new_matches():
         # First, scrape VLR and update both databases
         scrape_vlr()
         
-        # Then, get matches that need notification BUT DON'T mark them as notified yet
+        # Then, get matches that need notification
         matches_to_notify = get_matches_for_notification()
 
         if matches_to_notify:
