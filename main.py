@@ -73,6 +73,33 @@ class RateLimiter:
 # Create rate limiter instance
 discord_rate_limiter = RateLimiter(max_requests=5, cooldown_period=6)
 
+# Keep the Flask app alive (required for hosting services like Replit)
+def keep_alive():
+    app = Flask('')
+    
+    @app.route('/')
+    def home():
+        return "I'm alive!"
+    
+    def run():
+        app.run(host='0.0.0.0', port=8080)
+    
+    server_thread = Thread(target=run)
+    server_thread.daemon = True
+    server_thread.start()
+    print("Flask server started")
+
+# Self-pinging mechanism to keep the app awake
+def self_ping():
+    SELF_PING_URL = os.getenv("SELF_PING_URL", "http://localhost:8080/")
+    while True:
+        try:
+            response = requests.get(SELF_PING_URL)
+            print(f"Self ping response: {response.status_code}")
+        except Exception as e:
+            print(f"Self ping failed: {e}")
+        time.sleep(300)  # Ping every 5 minutes
+
 # Connect to Google Sheets
 def get_google_sheets_client():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
