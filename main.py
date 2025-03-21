@@ -361,8 +361,8 @@ def insert_data_to_db(matches, new_completed_matches=None):
             # Insert or update match record
             cur.execute("""
                 INSERT INTO matches 
-                (datetime, team1, score1, team2, score2, status, phase, tournament, match_link, notified)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, FALSE)
+                (datetime, team1, score1, team2, score2, status, phase, tournament, match_link)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (match_link) DO UPDATE 
                 SET datetime = EXCLUDED.datetime,
                     team1 = EXCLUDED.team1,
@@ -377,7 +377,7 @@ def insert_data_to_db(matches, new_completed_matches=None):
                                 WHEN matches.notified = TRUE THEN TRUE 
                                 ELSE FALSE 
                               END
-            """, match + (False,))  # Add FALSE for notified parameter
+            """, match)  # Just use match as is, without adding the FALSE parameter
             
             # If debugging, print match status
             print(f"Match {match[1]} vs {match[3]} - Status: {match_status}, Should notify: {should_notify}")
@@ -391,7 +391,6 @@ def insert_data_to_db(matches, new_completed_matches=None):
         traceback.print_exc()
         if conn:
             conn.close()
-
 # Get matches to notify about (WITHOUT marking them as notified yet)
 def get_matches_for_notification():
     conn = get_db_connection()
