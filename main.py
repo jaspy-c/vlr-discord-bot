@@ -370,8 +370,8 @@ def insert_data_to_db(matches, new_completed_matches=None):
         if conn:
             conn.close()
 
-# Get matches to notify about and mark them as notified
-def get_and_mark_matches_for_notification():
+# Get matches to notify about (WITHOUT marking them as notified yet)
+def get_matches_for_notification():
     conn = get_db_connection()
     if not conn:
         return []
@@ -387,17 +387,14 @@ def get_and_mark_matches_for_notification():
             AND datetime > NOW() - INTERVAL '24 hours'
         """)
         matches_to_notify = cur.fetchall()
-        
-        # Mark these matches as notified
-        if matches_to_notify:
-            match_links = [match[8] for match in matches_to_notify]
-            placeholders = ','.join(['%s'] * len(match_links))
-            cur.execute(f"UPDATE matches SET notified = TRUE WHERE match_link IN ({placeholders})", match_links)
-            conn.commit()
-            print(f"✅ Marked {len(matches_to_notify)} matches as notified")
-        
         cur.close()
         conn.close()
+        
+        if matches_to_notify:
+            print(f"✅ Found {len(matches_to_notify)} matches that need notification")
+        else:
+            print("No matches need notification at this time")
+            
         return matches_to_notify
     except Exception as e:
         print(f"❌ Error getting matches for notification: {str(e)}")
@@ -406,32 +403,31 @@ def get_and_mark_matches_for_notification():
             conn.close()
         return []
 
-# Keep the Flask app alive (required for hosting services like Replit)
-def keep_alive():
-    app = Flask('')
+# Mark matches as notified (only call this after notifications are sent successfully)
+def mark_matches_as_notified(match_links):
+    if not match_links:
+        return 0
+        
+    conn = get_db_connection()
+    if not conn:
+        return 0
     
-    @app.route('/')
-    def home():
-        return "I'm alive!"
-    
-    def run():
-        app.run(host='0.0.0.0', port=8080)
-    
-    server_thread = Thread(target=run)
-    server_thread.daemon = True
-    server_thread.start()
-    print("Flask server started")
-
-# Self-pinging mechanism to keep the app awake
-def self_ping():
-    SELF_PING_URL = os.getenv("SELF_PING_URL", "http://localhost:8080/")
-    while True:
-        try:
-            response = requests.get(SELF_PING_URL)
-            print(f"Self ping response: {response.status_code}")
-        except Exception as e:
-            print(f"Self ping failed: {e}")
-        time.sleep(300)  # Ping every 5 minutes
+    try:
+        cur = conn.cursor()
+        placeholders = ','.join(['%s'] * len(match_links))
+        cur.execute(f"UPDATE matches SET notified = TRUE WHERE match_link IN ({placeholders})", match_links)
+        rows_affected = cur.rowcount
+        conn.commit()
+        cur.close()
+        conn.close()
+        print(f"✅ Marked {rows_affected} matches as notified")
+        return rows_affected
+    except Exception as e:
+        print(f"❌ Error marking matches as notified: {str(e)}")
+        traceback.print_exc()
+        if conn:
+            conn.close()
+        return 0
 
 # Rate-limited message sending function
 async def send_rate_limited_message(user, content):
@@ -469,14 +465,16 @@ async def check_for_new_matches():
         # First, scrape VLR and update both databases
         scrape_vlr()
         
-        # Then, get matches that need notification and mark them as notified
-        matches_to_notify = get_and_mark_matches_for_notification()
+        # Then, get matches that need notification BUT DON'T mark them as notified yet
+        matches_to_notify = get_matches_for_notification()
 
         if matches_to_notify:
             print(f"Found {len(matches_to_notify)} matches to notify about!")
 
             if target_user:
                 try:
+                    successful_notifications = []  # Track which notifications were successful
+                    
                     for match_data in matches_to_notify:
                         match_message = (
                             f"🔥 **New Match Completed!** 🔥\n"
@@ -486,9 +484,19 @@ async def check_for_new_matches():
                             f"🕒 {match_data[0]}\n"
                             f"🔗 [Match Link]({match_data[8]})"
                         )
-                        # Use the rate-limited message sending function
-                        await send_rate_limited_message(target_user, match_message)
-                    print(f"✅ Sent {len(matches_to_notify)} new match notifications with rate limiting!")
+                        try:
+                            # Use the rate-limited message sending function
+                            await send_rate_limited_message(target_user, match_message)
+                            # If successful, add to our successful list
+                            successful_notifications.append(match_data[8])  # Add match link
+                        except Exception as e:
+                            print(f"❌ Failed to send notification for {match_data[1]} vs {match_data[3]}: {str(e)}")
+                    
+                    # Only mark matches as notified if we successfully sent the notification
+                    if successful_notifications:
+                        mark_matches_as_notified(successful_notifications)
+                        print(f"✅ Successfully sent and marked {len(successful_notifications)} notifications!")
+                    
                 except discord.errors.Forbidden:
                     print("❌ Cannot send DM to user - they have DMs disabled or blocked the bot")
                 except Exception as e:
@@ -501,6 +509,20 @@ async def check_for_new_matches():
     except Exception as e:
         print(f"❌ Error in check_for_new_matches: {str(e)}")
         traceback.print_exc()
+
+# Manual command to force notification check
+@bot.command(name="checkmatches")
+async def force_check_matches(ctx):
+    """Manually trigger a check for new matches"""
+    if ctx.author.id == int(YOUR_DISCORD_USER_ID):
+        await ctx.send("🔄 Manually checking for new matches...")
+        try:
+            await check_for_new_matches()
+            await ctx.send("✅ Manual check completed!")
+        except Exception as e:
+            await ctx.send(f"❌ Error during manual check: {str(e)}")
+    else:
+        await ctx.send("Only the bot owner can use this command.")
 
 # Manual command to test rate limiting
 @bot.command(name="testlimit")
@@ -532,6 +554,50 @@ async def reset_notifications(ctx):
             cur.close()
             conn.close()
             await ctx.send(f"✅ Reset notification status for {rows_affected} matches!")
+        except Exception as e:
+            await ctx.send(f"❌ Error: {str(e)}")
+            if conn:
+                conn.close()
+    else:
+        await ctx.send("Only the bot owner can use this command.")
+        
+# List unnotified matches (for debugging)
+@bot.command(name="pendingmatches")
+async def list_pending_matches(ctx):
+    """List matches that are pending notification"""
+    if ctx.author.id == int(YOUR_DISCORD_USER_ID):
+        conn = get_db_connection()
+        if not conn:
+            await ctx.send("❌ Could not connect to database")
+            return
+            
+        try:
+            cur = conn.cursor()
+            cur.execute("""
+                SELECT team1, team2, score1, score2, status, match_link 
+                FROM matches 
+                WHERE status IN ('completed', 'finished', 'final')
+                AND notified = FALSE
+                AND datetime > NOW() - INTERVAL '24 hours'
+            """)
+            pending_matches = cur.fetchall()
+            cur.close()
+            conn.close()
+            
+            if pending_matches:
+                message = "📋 **Pending Matches:**\n\n"
+                for i, match in enumerate(pending_matches, 1):
+                    message += f"{i}. {match[0]} vs {match[1]} ({match[2]}-{match[3]}) - {match[4]}\n"
+                    
+                    # Discord has a 2000 character limit per message
+                    if len(message) > 1900:
+                        await ctx.send(message)
+                        message = ""
+                
+                if message:
+                    await ctx.send(message)
+            else:
+                await ctx.send("No pending matches found!")
         except Exception as e:
             await ctx.send(f"❌ Error: {str(e)}")
             if conn:
