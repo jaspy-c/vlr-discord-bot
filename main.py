@@ -75,22 +75,22 @@ class RateLimiter:
         self.lock = asyncio.Lock()  # Synchronize access to request_times
     
     async def wait_if_needed(self):
-    while True:
-        async with self.lock:
-            now = time.time()
-            # Remove timestamps older than cooldown period
-            self.request_times = [t for t in self.request_times if now - t < self.cooldown_period]
-            
-            if len(self.request_times) < self.max_requests:
-                # We are under the limit, so record the current time and break out
-                self.request_times.append(now)
-                break
-            else:
-                # Calculate time to wait based on the oldest request timestamp
-                wait_time = self.request_times[0] + self.cooldown_period - now + 0.1
-                print(f"⏱️ Rate limit hit, waiting for {wait_time:.2f} seconds")
-        # Release the lock before sleeping
-        await asyncio.sleep(wait_time)
+        while True:
+            async with self.lock:
+                now = time.time()
+                # Remove timestamps older than cooldown period
+                self.request_times = [t for t in self.request_times if now - t < self.cooldown_period]
+                
+                if len(self.request_times) < self.max_requests:
+                    # We are under the limit, so record the current time and break out
+                    self.request_times.append(now)
+                    break
+                else:
+                    # Calculate time to wait based on the oldest request timestamp
+                    wait_time = self.request_times[0] + self.cooldown_period - now + 0.1
+                    print(f"⏱️ Rate limit hit, waiting for {wait_time:.2f} seconds")
+            # Release the lock before sleeping
+            await asyncio.sleep(wait_time)
 
 
 # Create rate limiter instance
