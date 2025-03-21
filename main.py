@@ -103,6 +103,89 @@ def get_existing_matches_from_sheet():
         traceback.print_exc()
         return set()
 
+# Connect to PostgreSQL database and get a connection
+def get_db_connection():
+    try:
+        # Try to connect using DATABASE_URL first (common in hosting platforms)
+        database_url = os.getenv("DATABASE_URL")
+        
+        if database_url:
+            # Connect directly using the URL
+            print("Connecting to database using DATABASE_URL")
+            conn = psycopg2.connect(database_url)
+        else:
+            # Fall back to individual connection parameters
+            print("Connecting to database using individual parameters")
+            conn = psycopg2.connect(
+                dbname=os.getenv("DB_NAME"),
+                user=os.getenv("DB_USER"),
+                password=os.getenv("DB_PASSWORD"),
+                host=os.getenv("DB_HOST"),
+                port=os.getenv("DB_PORT")
+            )
+        return conn
+    except Exception as e:
+        print(f"❌ Error connecting to database: {str(e)}")
+        traceback.print_exc()
+        return None
+
+# Function to create tables if they don't exist
+def initialize_database():
+    conn = get_db_connection()
+    if not conn:
+        return False
+    
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS matches (
+                id SERIAL PRIMARY KEY,
+                datetime TIMESTAMP,
+                team1 VARCHAR(255),
+                team2 VARCHAR(255),
+                score1 VARCHAR(10),
+                score2 VARCHAR(10),
+                status VARCHAR(50),
+                phase VARCHAR(255),
+                tournament VARCHAR(255),
+                match_link VARCHAR(255) UNIQUE,
+                notified BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+        cur.close()
+        conn.close()
+        print("✅ Database initialized successfully")
+        return True
+    except Exception as e:
+        print(f"❌ Error initializing database: {str(e)}")
+        traceback.print_exc()
+        if conn:
+            conn.close()
+        return False
+
+# Function to get existing notified matches from database
+def get_notified_matches():
+    conn = get_db_connection()
+    if not conn:
+        return set()
+    
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT match_link FROM matches WHERE notified = TRUE")
+        notified_matches = {row[0] for row in cur.fetchall()}
+        cur.close()
+        conn.close()
+        print(f"✅ Found {len(notified_matches)} previously notified matches in database")
+        return notified_matches
+    except Exception as e:
+        print(f"❌ Error getting notified matches: {str(e)}")
+        traceback.print_exc()
+        if conn:
+            conn.close()
+        return set()
+
 # Function to scrape VLR.gg and update data
 def scrape_vlr():
     VLR_URL = "https://www.vlr.gg/matches/results"
@@ -118,6 +201,9 @@ def scrape_vlr():
 
     # Get existing match URLs from the Google Sheet
     existing_match_urls = get_existing_matches_from_sheet()
+    
+    # Get matches we've already notified about
+    notified_matches = get_notified_matches()
 
     # Iterate through the match schedule
     for element in soup.find_all(["div", "a"]):
@@ -140,9 +226,6 @@ def scrape_vlr():
             # Skip if champions or masters is not in the URL
             if not ("champions" in match_link or "masters" in match_link):
                 continue
-
-            # Check if match is already in our sheet
-            is_new_match = match_link not in existing_match_urls
 
             match_time = element.find("div", class_="match-item-time").text.strip()
 
@@ -182,8 +265,21 @@ def scrape_vlr():
             print(f"Found match: {team1} vs {team2} [{match_class}] - Status: {match_status}")
 
             # Check if this is a newly completed match that we should notify about
-            if is_new_match and match_status.lower() in ["completed", "finished", "final"]:
-                new_completed_matches.append(match_data)
+            if match_status.lower() in ["completed", "finished", "final"] and match_link not in notified_matches:
+                # Make sure the match date is recent (within the last 24 hours)
+                try:
+                    match_date = datetime.strptime(formatted_datetime, "%Y-%m-%d %H:%M:%S")
+                    now = datetime.now()
+                    time_diff = now - match_date
+                    
+                    # Only notify about matches from the last 24 hours
+                    if time_diff.total_seconds() < 86400:  # 24 hours in seconds
+                        new_completed_matches.append(match_data)
+                    else:
+                        print(f"Match is too old for notification ({time_diff.total_seconds()/3600:.1f} hours): {team1} vs {team2}")
+                except ValueError:
+                    # If we can't parse the date, skip notification
+                    print(f"Could not parse date for match: {team1} vs {team2}")
 
     print(f"Found a total of {len(matches)} matches ({len(new_completed_matches)} new completed)")
 
@@ -191,7 +287,7 @@ def scrape_vlr():
     update_google_sheets(matches)
     
     # Update PostgreSQL database with all matches
-    insert_data_to_db(matches)
+    insert_data_to_db(matches, new_completed_matches)
 
     return new_completed_matches
 
@@ -220,49 +316,23 @@ def update_google_sheets(matches):
         traceback.print_exc()
 
 # Insert data into the PostgreSQL database
-def insert_data_to_db(matches):
+def insert_data_to_db(matches, new_completed_matches=None):
+    conn = get_db_connection()
+    if not conn:
+        return
+    
     try:
-        # Try to connect using DATABASE_URL first (common in hosting platforms)
-        database_url = os.getenv("DATABASE_URL")
-        
-        if database_url:
-            # Connect directly using the URL
-            print("Connecting to database using DATABASE_URL")
-            conn = psycopg2.connect(database_url)
-        else:
-            # Fall back to individual connection parameters
-            print("Connecting to database using individual parameters")
-            conn = psycopg2.connect(
-                dbname=os.getenv("DB_NAME"),
-                user=os.getenv("DB_USER"),
-                password=os.getenv("DB_PASSWORD"),
-                host=os.getenv("DB_HOST"),
-                port=os.getenv("DB_PORT")
-            )
-        
-        # Create table if it doesn't exist
         cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS matches (
-                id SERIAL PRIMARY KEY,
-                datetime TIMESTAMP,
-                team1 VARCHAR(255),
-                score1 VARCHAR(10),
-                team2 VARCHAR(255),
-                score2 VARCHAR(10),
-                status VARCHAR(50),
-                phase VARCHAR(255),
-                tournament VARCHAR(255),
-                match_link VARCHAR(255) UNIQUE,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        conn.commit()
         
-        # Clear existing data and insert new data
-        cur.execute("TRUNCATE TABLE matches")
-        
+        # Process each match (without truncating existing data)
         for match in matches:
+            # Extract match link for identification
+            match_link = match[8]
+            
+            # Check if this match is in the new_completed_matches list
+            should_notify = any(match_link == new_match[8] for new_match in (new_completed_matches or []))
+            
+            # Insert or update match record
             cur.execute("""
                 INSERT INTO matches 
                 (datetime, team1, score1, team2, score2, status, phase, tournament, match_link)
@@ -277,6 +347,18 @@ def insert_data_to_db(matches):
                     phase = EXCLUDED.phase,
                     tournament = EXCLUDED.tournament
             """, match)
+            
+            # If this is a new completed match, mark it as pending notification
+            if should_notify:
+                # Check if notified is already TRUE
+                cur.execute("SELECT notified FROM matches WHERE match_link = %s", (match_link,))
+                result = cur.fetchone()
+                
+                # Only update if not already notified
+                if not result or not result[0]:
+                    print(f"Marking match for notification: {match[1]} vs {match[3]}")
+                else:
+                    print(f"Match already notified: {match[1]} vs {match[3]}")
         
         conn.commit()
         cur.close()
@@ -285,7 +367,44 @@ def insert_data_to_db(matches):
     except Exception as e:
         print(f"❌ Error inserting data into PostgreSQL: {str(e)}")
         traceback.print_exc()
-        print("Make sure DATABASE_URL or the individual DB_* environment variables are set")
+        if conn:
+            conn.close()
+
+# Get matches to notify about and mark them as notified
+def get_and_mark_matches_for_notification():
+    conn = get_db_connection()
+    if not conn:
+        return []
+    
+    try:
+        cur = conn.cursor()
+        # Get matches that need notification
+        cur.execute("""
+            SELECT datetime, team1, score1, team2, score2, status, phase, tournament, match_link
+            FROM matches 
+            WHERE status IN ('completed', 'finished', 'final')
+            AND notified = FALSE
+            AND datetime > NOW() - INTERVAL '24 hours'
+        """)
+        matches_to_notify = cur.fetchall()
+        
+        # Mark these matches as notified
+        if matches_to_notify:
+            match_links = [match[8] for match in matches_to_notify]
+            placeholders = ','.join(['%s'] * len(match_links))
+            cur.execute(f"UPDATE matches SET notified = TRUE WHERE match_link IN ({placeholders})", match_links)
+            conn.commit()
+            print(f"✅ Marked {len(matches_to_notify)} matches as notified")
+        
+        cur.close()
+        conn.close()
+        return matches_to_notify
+    except Exception as e:
+        print(f"❌ Error getting matches for notification: {str(e)}")
+        traceback.print_exc()
+        if conn:
+            conn.close()
+        return []
 
 # Keep the Flask app alive (required for hosting services like Replit)
 def keep_alive():
@@ -336,6 +455,9 @@ async def on_ready():
     except ValueError:
         print(f"❌ Invalid Discord user ID format: {YOUR_DISCORD_USER_ID}")
 
+    # Initialize database
+    initialize_database()
+    
     # Start the match checking task
     check_for_new_matches.start()
 
@@ -344,14 +466,18 @@ async def on_ready():
 async def check_for_new_matches():
     print(f"🔄 Checking for new matches... {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     try:
-        new_completed_matches = scrape_vlr()
+        # First, scrape VLR and update both databases
+        scrape_vlr()
+        
+        # Then, get matches that need notification and mark them as notified
+        matches_to_notify = get_and_mark_matches_for_notification()
 
-        if new_completed_matches:
-            print(f"Found {len(new_completed_matches)} new completed matches!")
+        if matches_to_notify:
+            print(f"Found {len(matches_to_notify)} matches to notify about!")
 
             if target_user:
                 try:
-                    for match_data in new_completed_matches:
+                    for match_data in matches_to_notify:
                         match_message = (
                             f"🔥 **New Match Completed!** 🔥\n"
                             f"🏆 {match_data[7]} - {match_data[6]}\n"
@@ -362,7 +488,7 @@ async def check_for_new_matches():
                         )
                         # Use the rate-limited message sending function
                         await send_rate_limited_message(target_user, match_message)
-                    print(f"✅ Sent {len(new_completed_matches)} new match notifications with rate limiting!")
+                    print(f"✅ Sent {len(matches_to_notify)} new match notifications with rate limiting!")
                 except discord.errors.Forbidden:
                     print("❌ Cannot send DM to user - they have DMs disabled or blocked the bot")
                 except Exception as e:
@@ -371,7 +497,7 @@ async def check_for_new_matches():
             else:
                 print(f"❌ Target user not found. Still waiting to find user with ID {YOUR_DISCORD_USER_ID}")
         else:
-            print("✅ No new matches found.")
+            print("✅ No new matches to notify about.")
     except Exception as e:
         print(f"❌ Error in check_for_new_matches: {str(e)}")
         traceback.print_exc()
@@ -385,6 +511,31 @@ async def test_rate_limit(ctx, count: int = 10):
         for i in range(count):
             await send_rate_limited_message(ctx.author, f"Test message {i+1} of {count}")
         await ctx.send("All test messages sent!")
+    else:
+        await ctx.send("Only the bot owner can use this command.")
+
+# Reset notification status (for debugging)
+@bot.command(name="resetnotifications")
+async def reset_notifications(ctx):
+    """Reset notification status for all matches"""
+    if ctx.author.id == int(YOUR_DISCORD_USER_ID):
+        conn = get_db_connection()
+        if not conn:
+            await ctx.send("❌ Could not connect to database")
+            return
+            
+        try:
+            cur = conn.cursor()
+            cur.execute("UPDATE matches SET notified = FALSE")
+            conn.commit()
+            rows_affected = cur.rowcount
+            cur.close()
+            conn.close()
+            await ctx.send(f"✅ Reset notification status for {rows_affected} matches!")
+        except Exception as e:
+            await ctx.send(f"❌ Error: {str(e)}")
+            if conn:
+                conn.close()
     else:
         await ctx.send("Only the bot owner can use this command.")
         
