@@ -31,13 +31,6 @@ except json.JSONDecodeError:
     print("ERROR: Google credentials JSON is invalid")
     google_creds = {}
 
-# Flask app for keeping the bot alive
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "Bot is alive!"
-
 # Keep the Flask app alive (required for hosting services like Replit)
 def keep_alive():
     app = Flask('')
