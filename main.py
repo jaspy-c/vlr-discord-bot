@@ -407,7 +407,6 @@ def get_matches_for_notification():
             FROM matches 
             WHERE status IN ('completed', 'finished', 'final')
             AND notified = FALSE
-            AND datetime > NOW() - INTERVAL '24 hours'
         """)
         matches_to_notify = cur.fetchall()
         cur.close()
