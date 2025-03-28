@@ -238,6 +238,7 @@ def scrape_vlr():
         if "wf-module-item" in element.get("class", []) and (
             "mod-bg-after-striped_purple" in element.get("class", []) or 
             "mod-bg-after-orange" in element.get("class", []) or
+            "mod-bg-after-yellow" in element.get("class", []) or
             "mod-bg-after-blue" in element.get("class", []) or
             "mod-bg-after-red" in element.get("class", [])
         ):
